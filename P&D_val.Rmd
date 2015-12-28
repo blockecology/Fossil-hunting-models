@@ -1,0 +1,166 @@
+---
+title: "Preservation & discovery models for independent validation"
+author: "Sebastian Block et al."
+output: html_document
+---
+<br>
+
+This is the code to run the models of fossil preservation and discovery excluding grid cells with unreliable fossils of *Diprotodon*, *Zygomaturus*, *Protemnodon*, *Thylacoleo*, and *Genyornis*. <br>
+
+**NOTE**: Don't forget to set your working directory to the folder containing all the files, in this case, the folder `Block et al. (2015) Fossil Hunting`. <br> <br>
+
+
+## Load data
+<br>
+We will load the data from the attribute tables of the shapefiles `Preservation.shp` and `Discovery.shp`. To account of sampling bias in the discovery model, we will also need to load the file `dataSB.csv`. Read the metadata of each data file to know exactly what the variable names stand for and how they were calculated. 
+<br>
+
+```{r Loading Data, message=FALSE, eval=FALSE}
+setwd("~/Dropbox/Block et al 2015 Fossil Hunting") # Change this path to match the location of the directory in your computer
+
+# To load dbf files (attribute table of shp file), we need the foreign package
+require(foreign) 
+require(dplyr) # We will use this package to manipulate data 
+
+# Load dbf
+gridFP <- read.dbf("Data/Grids/Preservation.dbf")
+
+# Replace old lithological variable (based on fossil presence) with area of sedimentary rocks and regoliths
+gridFP$lithos <- gridFP$SediRegmea 
+gridFP$lithos[is.na(gridFP$lithos)] <- 0
+
+
+# Exclude grid cells with unreliable taxa fossils
+n_ori <- sum(gridFP$fossPA) # Number of original presence grid cells
+
+taxaPA <- read.dbf("Data/Grids/taxaPA.dbf") # grid with density of taxa fossils in each grid cell
+taxaPA$taxaPAv <- numeric(nrow(taxaPA))
+taxaPA$taxaA <- numeric(nrow(taxaPA))
+
+for (i in 1:nrow(taxaPA)) {
+        taxaPA$taxaPAv[i] <- ifelse(max(taxaPA[i, 1:5]) > 0, 1, 0)
+        taxaPA$taxaA[i] <- ifelse(max(taxaPA[i, 6:10]) > 0, 1, 0)
+}
+
+taxaPA[taxaPA$taxaA == 1, 11] <- 0
+n_val <- sum(taxaPA$taxaPAv) # This is the number of presence grid cells to remove
+
+gridFP$fossPA <- ifelse(taxaPA$taxaPAv > 0, 0, gridFP$fossPA) # Exclude grid cells
+n_new <- sum(gridFP$fossPA)
+
+n_new == n_ori - n_val # Did we do it right?
+
+# Select variables that we will use in the preservation model (i.e., fossil presence/absence, lake cover, and suitable rock cover)
+dataFP <- select(gridFP, fossPA, cavePA, lakes, lithos)
+
+
+# Load sampling bias data
+dataSB <- read.csv("Data/dataSB.csv")
+dataSB <- dataSB[,4:8]
+dataSB <- select(dataSB, -reserve) # Exclude reserve variable (inactivate this line if you want to include them)
+
+
+# Load and prepare discovery data
+dataFD <- read.dbf("Data/Grids/Discovery.dbf")
+# Select variables to use in the discovery model (NV = bare soil, rain erosive power, mean slope)
+dataFD <- select(dataFD, NVmean, rainEPmean, slopemean)
+# Rename variables
+names(dataFD) <- c("NV", "rainEP", "slope")
+# Assign 0 to missing values of slope
+dataFD[is.na(dataFD$slope), 3] <- 0
+# Assign 0 to negative values of slope
+dataFD[dataFD$slope < 0, 3] <- 0
+summary(dataFD)
+
+# Combine all data
+all.data <- cbind(dataFP, dataSB, dataFD)
+```
+
+<br>
+
+## Predictions
+
+
+
+Now let's train the models with all the data and use them to predict the presence of fossils in each grid cell. <br> <br>
+
+### Fossil Preservation
+
+```{r Preservation predictions, eval=FALSE}
+# Full model preservation
+fpm <- glm(fossPA ~ cavePA + lakes + lithos, family = "binomial", 
+               data = dataFP, na.action = "na.pass")
+summary(fpm)
+
+# Proportion of deviance explained by the model
+1 - fpm$deviance / fpm$null.deviance 
+
+# Make predictions
+predFP.data <- select(gridFP, cavePA, lakes, lithos)
+pFP <- predict(fpm, predFP.data, type = "response")
+```
+<br>
+
+### Fossil Discovery
+
+Now we will model the probability of fossil discovery as a function of current conditions like terrain slope, rain intensity and bare soil. But first, we need to take into account the sampling bias. We will model the probability of each cell being sampled as a function of their distance to cities with major research centers, their population density, and other variables that possibly affect sampling bias. Originally, we included the area of reserves per grid cell in the model, but I am not sure if there are many fossils in reserves because people search more in reserves, or those areas are reserves *because* they have a lot of fossils. Thus, I decided not to include this variable in the model. <br>
+
+We will use the probability predicted by the sampling bias model as an offset in the model of fossil discovery. <br><br>
+
+```{r Sampling bias model, message=FALSE, eval=FALSE}
+dataSB$fossPA <- dataFP$fossPA
+# Sampling bias model
+sbm <- glm(fossPA ~ ., family = "binomial", data = dataSB, na.action = "na.pass")
+
+# Ranking models with all possible combinations of predictors
+require(MuMIn) # This package makes models with all the combinations of variables and ranks them
+sbd <- dredge(sbm, rank = "BIC")
+bestSBM <- get.models(sbd, 1)[[1]] # select best model
+summary(bestSBM)
+
+# Calculate sampling bias and use its inverse value as a sampling weight
+samp.bias <- predict(bestSBM, type = "response")
+samp.wg <- log(1/samp.bias)
+```
+
+<br>
+We are ready to model the probability of fossil discovery. <br><br>
+
+```{r Fossil Discovery, message=FALSE, eval=FALSE}
+dataFD$fossPA <- dataFP$fossPA
+# Model with sample bias as offset
+fdm <- glm(fossPA ~ ., 
+            family = "binomial", data = dataFD, 
+            offset = samp.wg)
+ 
+summary(fdm)
+1 - fdm$deviance / fdm$null.deviance # Proportion of deviance explained
+```
+<br>
+
+We use the sampling bias offset to calibrate the model, but we don't want to use it for the predictions, since there is no reason why places close to cities, for example, should have a lower probability of fossil discovery than places far from cities. Hence, we will make the predictions "manually" by using the coefficients of the model `bestFDM`. <br> <br>
+
+```{r Fossil Discovery Predictions, eval=FALSE}
+# Get coefficients
+a0 <-  fdm$coefficients[[1]] # Intercept
+a1 <- fdm$coefficients[[2]] # NV coefficient
+a2 <- fdm$coefficients[[3]] # rainEP coefficient
+a3 <- fdm$coefficients[[4]] # slope coefficient
+
+# Make prediction
+pFD <- a0 + (a1 * dataFD$NV) + (a2 * dataFD$rainEP) + (a3 * dataFD$slope) 
+pFD <- exp(pFD)/(1+exp(pFD))
+```
+
+<br> <br>
+
+## Back to the grid
+<br>
+
+Finally, we have to save the model outputs as a `dbf` file that will be the attribute table of a shapefile called `GridProbs.shp`. <br> <br>
+
+```{r Saving dbf, eval=FALSE}
+gridPD <- data.frame(Preservation = pFP, Discovery = pFD)
+write.dbf(gridPD, "Data/Grids/GridPD_val.dbf")
+```
+

@@ -1,0 +1,59 @@
+---
+title: "Zonal Statistics"
+author: "Sebastian Block et al."
+output: html_document
+---
+
+This code loads the raster files created in `PCEM.Rmd` and calculates the mean value of the raster pixels (i.e., palaeo-climate suitability for a given taxon) in each grid cell of `grid1deg.shp` (a 1º grid of Australia). <br><br>
+
+To run this code, first you need to have created palaeo-climate suitability rasters for each of the five genera presented in the paper (*Diprotodon*, *Zygomaturus*, *Protemnodon*, *Thylacoleo*, and *Genyornis*). <br>
+
+
+```{r Zonal statistics, eval=FALSE}
+# Set working directory
+setwd("~/Dropbox/Block et al 2015 Fossil Hunting") # Change this path to match the location of the directory in your computer
+
+# Load required packages
+require(raster)
+require(rgdal)
+require(maptools)
+require(foreign)
+
+# Create vector with taxa names
+taxa <- c("Diprotodon", "Zygomaturus", "Protemnodon", "Thylacoleo", "Genyornis")
+
+
+# Load grid as spatial object and assign it a coordinate reference system
+Grid <- readShapeSpatial("Data/Grids/multiPCS")
+proj4string(Grid) <- CRS("+proj=longlat +ellps=WGS84")
+
+# Create data frame to store mean suitability values for each taxa
+n <- length(Grid)
+multiPCS <- data.frame(Diprotodon = numeric(n), Zygomaturus = numeric(n), 
+                       Protemnodon = numeric(n), Thylacoleo = numeric(n), Genyornis = numeric(n))
+
+# Calculate mean suitability in each grid cell for each taxa
+for (i in 1:length(taxa)) {
+        
+        # Create path to raster file
+        path <- paste("Data/Rasters/Final PCS/PCS_", taxa[i], ".tif", sep = "")
+        
+        # Load raster of Palaeo-Climate Suitability (PCS)
+        PCS <- raster(path)
+        
+        multiPCS[,i] <- extract(PCS, Grid, mean, na.rm = T)[,1]
+}
+
+# Assign 0 to the grid cells with missing values
+multiPCS[is.na(multiPCS$Diprotodon), 1] <- 0
+multiPCS[is.na(multiPCS$Zygomaturus), 2] <- 0
+multiPCS[is.na(multiPCS$Protemnodon), 3] <- 0
+multiPCS[is.na(multiPCS$Thylacoleo), 4] <- 0
+multiPCS[is.na(multiPCS$Genyornis), 5] <- 0
+
+# Look at the summary of the data
+summary(multiPCS)
+
+write.dbf(multiPCS, "Data/Grids/multiPCS.dbf")
+```
+

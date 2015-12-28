@@ -1,0 +1,509 @@
+---
+title: "Validations"
+author: "Sebastian Block et al."
+output: html_document
+---
+
+## Climate-envelope model validations
+
+Let's start by comparing the predictions of the climate-envelope models in grid cells with non-relliably dated fossils (not used for model training) and in random grid cells. First we will compare predicted suitability values in grid cells with fossils versus values in grid cells selected randomly with the Kolmogorov-Smirnov test. <br><br>
+
+```{r KS Validation SDM, eval=FALSE}
+# Set working directory
+setwd("~/Dropbox/Block et al 2015 Fossil Hunting") 
+
+# Load packages
+require(foreign)
+require(ggplot2)
+
+# Load data
+gridPs <- read.dbf("Data/Grids/valPs.dbf")
+taxaPA <- read.dbf("Data/Grids/taxaPA.dbf") # grid with density of taxa fossils in each grid cell
+
+# Convert densities into presence (1) / absences (0)
+## Validation fossils (unreliable ages)
+taxaPA$DiproPAv <- ifelse(taxaPA$DiproPAv > 0, 1, 0)
+taxaPA$ZygoPAv <- ifelse(taxaPA$ZygoPAv > 0, 1, 0)
+taxaPA$ProtePAv <- ifelse(taxaPA$ProtePAv > 0, 1, 0)
+taxaPA$ThylaPAv <- ifelse(taxaPA$ThylaPAv > 0, 1, 0)
+taxaPA$GenyPAv <- ifelse(taxaPA$GenyPAv > 0, 1, 0)
+
+
+## Training fossils (reliable ages)
+taxaPA$DiproA <- ifelse(taxaPA$DiproA > 0, 1, 0)
+taxaPA$ZygoA <- ifelse(taxaPA$ZygoA > 0, 1, 0)
+taxaPA$ProteA <- ifelse(taxaPA$ProteA > 0, 1, 0)
+taxaPA$ThylaA <- ifelse(taxaPA$ThylaA > 0, 1, 0)
+taxaPA$GenyA <- ifelse(taxaPA$GenyA > 0, 1, 0)
+
+gridPs <- cbind(gridPs, taxaPA)
+
+# Since the validation includes random selection of grid cells, to reproduce the exact same results
+# reported in the paper, it's necessary to set a seed.
+set.seed(8)
+
+## Diprotodon
+# Values of validation fossils
+pred.foss <- subset(gridPs, DiproPAv == 1 & DiproA == 0)$Dipro
+background <- subset(gridPs, DiproPAv == 0 & DiproA == 0)$Dipro
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Zygomaturus
+pred.foss <- subset(gridPs, ZygoPAv == 1 & ZygoA == 0)$Zygo
+background <- subset(gridPs, ZygoPAv == 0 & ZygoA == 0)$Zygo
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Protemnodon
+# Values of validation fossils
+pred.foss <- subset(gridPs, ProtePAv == 1 & ProteA == 0)$Prote
+background <- subset(gridPs, ProtePAv == 0 & ProteA == 0)$Prote
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Thylacoleo
+# Values of validation fossils
+pred.foss <- subset(gridPs, ThylaPAv == 1 & ThylaA == 0)$Thyla
+background <- subset(gridPs, ThylaPAv == 0 & ThylaA == 0)$Thyla
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Genyornis
+pred.foss <- subset(gridPs, GenyPAv == 1 & GenyA == 0)$Geny
+background <- subset(gridPs, GenyPAv == 0 & GenyA == 0)$Geny
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+```
+<br>
+
+Now let's calculate the true skill statistic.
+
+<br>
+
+```{r TSS Validation SDMs, eval=FALSE}
+set.seed(8)
+require(dismo)
+# Diprotodon
+tss <- numeric(1000)
+for (i in 1:1000){
+        presences <- gridPs[gridPs$DiproPAv == 1 & gridPs$DiproA == 0, "Dipro"]
+        pseudoabs <- gridPs[gridPs$DiproPAv == 0 & gridPs$DiproA == 0, "Dipro"]
+        pseudoabs <- pseudoabs[sample(length(pseudoabs), length(presences)*10)]
+        metasdm <- glm(DiproPAv ~ offset(Dipro) - 1, family="binomial", data = gridPs)
+        eva <- evaluate(presences, pseudoabs, metasdm)
+        tss[i] <- max(eva@TPR + eva@TNR) - 1
+}
+summary(tss)
+
+# Zygomaturus
+tss <- numeric(1000)
+for (i in 1:1000){
+        presences <- gridPs[gridPs$GenyPAv == 1 & gridPs$ZygoA == 0, "Zygo"]
+        pseudoabs <- gridPs[gridPs$GenyPAv == 0 & gridPs$ZygoA == 0, "Zygo"]
+        pseudoabs <- pseudoabs[sample(length(pseudoabs), length(presences)*10)]
+        metasdm <- glm(GenyPAv ~ offset(Geny) - 1, family="binomial", data = gridPs)
+        eva <- evaluate(presences, pseudoabs, metasdm)
+        tss[i] <- max(eva@TPR + eva@TNR) - 1
+}
+summary(tss)
+
+
+# Protemnodon
+tss <- numeric(1000)
+for (i in 1:1000){
+        presences <- gridPs[gridPs$ProtePAv == 1 & gridPs$ProteA == 0, "Prote"]
+        pseudoabs <- gridPs[gridPs$ProtePAv == 0 & gridPs$ProteA == 0, "Prote"]
+        pseudoabs <- pseudoabs[sample(length(pseudoabs), length(presences)*10)]
+        metasdm <- glm(ProtePAv ~ offset(Prote) - 1, family="binomial", data = gridPs)
+        eva <- evaluate(presences, pseudoabs, metasdm)
+        tss[i] <- max(eva@TPR + eva@TNR) - 1
+}
+summary(tss)
+
+# Thylacoleo
+tss <- numeric(1000)
+for (i in 1:1000){
+        presences <- gridPs[gridPs$ThylaPAv == 1 & gridPs$ThylaA == 0, "Thyla"]
+        pseudoabs <- gridPs[gridPs$ThylaPAv == 0 & gridPs$ThylaA == 0, "Thyla"]
+        pseudoabs <- pseudoabs[sample(length(pseudoabs), length(presences)*10)]
+        metasdm <- glm(ThylaPAv ~ offset(Thyla) - 1, family="binomial", data = gridPs)
+        eva <- evaluate(presences, pseudoabs, metasdm)
+        tss[i] <- max(eva@TPR + eva@TNR) - 1
+}
+summary(tss)
+
+# Genyornis
+tss <- numeric(1000)
+for (i in 1:1000){
+        presences <- gridPs[gridPs$GenyPAv == 1 & gridPs$GenyA == 0, "Geny"]
+        pseudoabs <- gridPs[gridPs$GenyPAv == 0 & gridPs$GenyA == 0, "Geny"]
+        pseudoabs <- pseudoabs[sample(length(pseudoabs), length(presences)*10)]
+        metasdm <- glm(GenyPAv ~ offset(Geny) - 1, family="binomial", data = gridPs)
+        eva <- evaluate(presences, pseudoabs, metasdm)
+        tss[i] <- max(eva@TPR + eva@TNR) - 1
+}
+summary(tss)
+```
+
+<br>
+
+Now let's do the same for the preservation model. 
+
+
+```{r KS Validation Preservation, eval=FALSE}
+set.seed(8)
+
+## Diprotodon
+# Values of validation fossils
+pred.foss <- subset(gridPs, DiproPAv == 1 & DiproA == 0)$Preservati
+background <- subset(gridPs, DiproPAv == 0 & DiproA == 0)$Preservati
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Zygomaturus
+pred.foss <- subset(gridPs, ZygoPAv == 1 & ZygoA == 0)$Preservati
+background <- subset(gridPs, ZygoPAv == 0 & ZygoA == 0)$Preservati
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Protemnodon
+# Values of validation fossils
+pred.foss <- subset(gridPs, ProtePAv == 1 & ProteA == 0)$Preservati
+background <- subset(gridPs, ProtePAv == 0 & ProteA == 0)$Preservati
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Thylacoleo
+# Values of validation fossils
+pred.foss <- subset(gridPs, ThylaPAv == 1 & ThylaA == 0)$Preservati
+background <- subset(gridPs, ThylaPAv == 0 & ThylaA == 0)$Preservati
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Genyornis
+pred.foss <- subset(gridPs, GenyPAv == 1 & GenyA == 0)$Preservati
+background <- subset(gridPs, GenyPAv == 0 & GenyA == 0)$Preservati
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+```
+
+And discovery model.
+
+```{r KS Validation Discovery, eval=FALSE}
+set.seed(8)
+
+## Diprotodon
+# Values of validation fossils
+pred.foss <- subset(gridPs, DiproPAv == 1 & DiproA == 0)$Discovery
+background <- subset(gridPs, DiproPAv == 0 & DiproA == 0)$Discovery
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Zygomaturus
+pred.foss <- subset(gridPs, ZygoPAv == 1 & ZygoA == 0)$Discovery
+background <- subset(gridPs, ZygoPAv == 0 & ZygoA == 0)$Discovery
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Protemnodon
+# Values of validation fossils
+pred.foss <- subset(gridPs, ProtePAv == 1 & ProteA == 0)$Discovery
+background <- subset(gridPs, ProtePAv == 0 & ProteA == 0)$Discovery
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Thylacoleo
+# Values of validation fossils
+pred.foss <- subset(gridPs, ThylaPAv == 1 & ThylaA == 0)$Discovery
+background <- subset(gridPs, ThylaPAv == 0 & ThylaA == 0)$Discovery
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Genyornis
+pred.foss <- subset(gridPs, GenyPAv == 1 & GenyA == 0)$Discovery
+background <- subset(gridPs, GenyPAv == 0 & GenyA == 0)$Discovery
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+```
+
+And the overlap of preservation and discovery models.
+
+```{r KS Validation Fossil Hotspots, eval=FALSE}
+set.seed(8)
+
+## Diprotodon
+# Values of validation fossils
+pred.foss1 <- subset(gridPs, DiproPAv == 1 & DiproA == 0)$Discovery
+pred.foss2 <- subset(gridPs, DiproPAv == 1 & DiproA == 0)$Preservati
+pred.foss <- (pred.foss1 + pred.foss2) / 2
+background1 <- subset(gridPs, DiproPAv == 0 & DiproA == 0)$Discovery
+background2 <- subset(gridPs, DiproPAv == 0 & DiproA == 0)$Preservati
+background <- (background1 + background2) / 2
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Zygomaturus
+pred.foss1 <- subset(gridPs, ZygoPAv == 1 & ZygoA == 0)$Discovery
+pred.foss2 <- subset(gridPs, ZygoPAv == 1 & ZygoA == 0)$Preservati
+pred.foss <- (pred.foss1 + pred.foss2) / 2
+background1 <- subset(gridPs, ZygoPAv == 0 & ZygoA == 0)$Discovery
+background2 <- subset(gridPs, ZygoPAv == 0 & ZygoA == 0)$Preservati
+background <- (background1 + background2) / 2
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Protemnodon
+# Values of validation fossils
+pred.foss1 <- subset(gridPs, ProtePAv == 1 & ProteA == 0)$Discovery
+pred.foss2 <- subset(gridPs, ProtePAv == 1 & ProteA == 0)$Preservati
+pred.foss <- (pred.foss1 + pred.foss2) / 2
+background1 <- subset(gridPs, ProtePAv == 0 & ProteA == 0)$Discovery
+background2 <- subset(gridPs, ProtePAv == 0 & ProteA == 0)$Preservati
+background <- (background1 + background2) / 2
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Thylacoleo
+# Values of validation fossils
+pred.foss1 <- subset(gridPs, ThylaPAv == 1 & ThylaA == 0)$Discovery
+pred.foss2 <- subset(gridPs, ThylaPAv == 1 & ThylaA == 0)$Preservati
+pred.foss <- (pred.foss1 + pred.foss2) / 2
+background1 <- subset(gridPs, ThylaPAv == 0 & ThylaA == 0)$Discovery
+background2 <- subset(gridPs, ThylaPAv == 0 & ThylaA == 0)$Preservati
+background <- (background1 + background2) / 2
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Genyornis
+pred.foss1 <- subset(gridPs, GenyPAv == 1 & GenyA == 0)$Discovery
+pred.foss2 <- subset(gridPs, GenyPAv == 1 & GenyA == 0)$Preservati
+pred.foss <- (pred.foss1 + pred.foss2) / 2
+background1 <- subset(gridPs, GenyPAv == 0 & GenyA == 0)$Discovery
+background2 <- subset(gridPs, GenyPAv == 0 & GenyA == 0)$Preservati
+background <- (background1 + background2) / 2
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+```
+
+
+And the overlap of the three models (climate-envelope, preservation, and discovery)
+
+```{r KS Validation Final P, eval=FALSE}
+set.seed(8)
+
+## Diprotodon
+# Values of validation fossils
+pred.foss <- subset(gridPs, DiproPAv == 1 & DiproA == 0)$diproP
+background <- subset(gridPs, DiproPAv == 0 & DiproA == 0)$diproP
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Zygomaturus
+pred.foss <- subset(gridPs, ZygoPAv == 1 & ZygoA == 0)$zygoP
+background <- subset(gridPs, ZygoPAv == 0 & ZygoA == 0)$zygoP
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+
+####
+
+## Protemnodon
+# Values of validation fossils
+pred.foss <- subset(gridPs, ProtePAv == 1 & ProteA == 0)$proteP
+background <- subset(gridPs, ProtePAv == 0 & ProteA == 0)$proteP
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Thylacoleo
+# Values of validation fossils
+pred.foss <- subset(gridPs, ThylaPAv == 1 & ThylaA == 0)$thylaP
+background <- subset(gridPs, ThylaPAv == 0 & ThylaA == 0)$thylaP
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+####
+
+## Genyornis
+pred.foss <- subset(gridPs, GenyPAv == 1 & GenyA == 0)$genyP
+background <- subset(gridPs, GenyPAv == 0 & GenyA == 0)$genyP
+
+# Compare to 
+kstats <- numeric(1000)
+for(i in 1:1000){
+        random_pts <- sample(background, length(pred.foss))
+        kstats[i] <- ks.test(pred.foss, random_pts, alternative = "less")$statistic
+}
+summary(kstats)
+```
+

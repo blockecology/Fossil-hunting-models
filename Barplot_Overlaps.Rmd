@@ -1,0 +1,104 @@
+---
+title: "Fig 2. Model comparisons"
+author: "Sebastian Block et al."
+output: html_document
+---
+## Fossil density in areas predicted by our models
+
+This is the code needed to make figure 2 of our paper (Block *et al*., 2016), which shows how our models can identify areas where the probability of finding fossils is high.
+
+The first step is to load the attribute table of the shapefile `3P.shp`. In the metadata for this file you can find an explanation of what each of the variables in the attribute table represent.
+
+**NOTE**: Don't forget to set your working directory to the folder containing all the files, in this case, the folder `Block et al. (2015) Fossil Hunting`
+
+```{r, results = 'hide', message=FALSE, warning=FALSE, eval=FALSE}
+# The attribute table is a dbf file, and to load in R we require the "foreing" package
+require(foreign)
+gridFH <- read.dbf("../Data/Grids/3P.dbf")
+```
+
+
+Now, let's create a new dataframe that will contain the data needed to make the plot. 
+
+
+```{r, eval=FALSE}
+plot_data <- data.frame(Genus = rep(c("Diprotodon", "Zygomaturus", "Protemnodon", "Thylacoleo", "Genyornis"), each = 3), Area = rep(c("Preservation & Discovery", "Climate Envelope", "All combined"), 5), Proportion = numeric(15))
+
+## Diprotodon
+bkp <- nrow(subset(gridFH, DiproPAv == 1)) / nrow(gridFH) # Proportion of fossils in whole landscape
+
+plot_data$Proportion[1] <- (nrow(subset(gridFH, DiproPAv ==1 & hotspots == 1)) / nrow(subset(gridFH, hotspots == 1))) / bkp # Proportion of fossils in FP & FD hotspots
+plot_data$Proportion[2] <- (nrow(subset(gridFH, DiproPAv ==1 & dipropred == 1)) / nrow(subset(gridFH, dipropred == 1))) / bkp # Proportion of fossils in SDM
+plot_data$Proportion[3] <- (nrow(subset(gridFH, DiproPAv ==1 & diprover == 1)) / nrow(subset(gridFH, diprover == 1))) / bkp
+
+## Zygomaturus
+bkp <- nrow(subset(gridFH, ZygoPAv == 1)) / nrow(gridFH) # Proportion of fossils in whole landscape
+
+plot_data$Proportion[4] <- (nrow(subset(gridFH, ZygoPAv ==1 & hotspots == 1)) / nrow(subset(gridFH, hotspots == 1))) / bkp # Proportion of fossils in FP & FD hotspots
+plot_data$Proportion[5] <- (nrow(subset(gridFH, ZygoPAv ==1 & zygopred == 1)) / nrow(subset(gridFH, zygopred == 1))) / bkp # Proportion of fossils in SDM
+plot_data$Proportion[6] <- (nrow(subset(gridFH, ZygoPAv ==1 & zygover == 1)) / nrow(subset(gridFH, zygover == 1))) / bkp
+
+## Protemnodon
+bkp <- nrow(subset(gridFH, ProtePAv == 1)) / nrow(gridFH) # Proportion of fossils in whole landscape
+
+plot_data$Proportion[7] <- (nrow(subset(gridFH, ProtePAv ==1 & hotspots == 1)) / nrow(subset(gridFH, hotspots == 1))) / bkp # Proportion of fossils in FP & FD hotspots
+plot_data$Proportion[8] <- (nrow(subset(gridFH, ProtePAv ==1 & protepred == 1)) / nrow(subset(gridFH, protepred == 1))) / bkp # Proportion of fossils in SDM
+plot_data$Proportion[9] <- (nrow(subset(gridFH, ProtePAv ==1 & protever == 1)) / nrow(subset(gridFH, protever == 1))) / bkp # Proportion of fossils in 3P
+
+## Thylacoleo
+bkp <- nrow(subset(gridFH, ThylaPAv == 1)) / nrow(gridFH) # Proportion of fossils in whole landscape
+
+plot_data$Proportion[10] <- (nrow(subset(gridFH, ThylaPAv ==1 & hotspots == 1)) / nrow(subset(gridFH, hotspots == 1))) / bkp # Proportion of fossils in FP & FD hotspots
+plot_data$Proportion[11] <- (nrow(subset(gridFH, ThylaPAv ==1 & thylapred == 1)) / nrow(subset(gridFH, thylapred == 1))) / bkp # Proportion of fossils in SDM
+plot_data$Proportion[12] <- (nrow(subset(gridFH, ThylaPAv ==1 & thylaver == 1)) / nrow(subset(gridFH, thylaver == 1))) / bkp
+
+## Genyornis
+bkp <- nrow(subset(gridFH, GenyPAv == 1)) / nrow(gridFH) # Proportion of fossils in whole landscape
+
+plot_data$Proportion[13] <- (nrow(subset(gridFH, GenyPAv ==1 & hotspots == 1)) / nrow(subset(gridFH, hotspots == 1))) / bkp # Proportion of fossils in FP & FD hotspots
+plot_data$Proportion[14] <- (nrow(subset(gridFH, GenyPAv ==1 & genypred == 1)) / nrow(subset(gridFH, genypred == 1))) / bkp # Proportion of fossils in SDM
+plot_data$Proportion[15] <- (nrow(subset(gridFH, GenyPAv ==1 & genyver == 1)) / nrow(subset(gridFH, genyver == 1))) / bkp
+
+plot_data$Genus <- factor(plot_data$Genus, c("Diprotodon", "Zygomaturus", "Protemnodon", "Thylacoleo", "Genyornis"))
+plot_data$Area <- factor(plot_data$Area, levels = c("Climate Envelope", "Preservation & Discovery", "All combined"))
+```
+
+
+The following code will create the figure and save it as a TIFF file in the specified directory. 
+
+
+```{r, results = 'hide', message=FALSE, warning=FALSE, eval=FALSE}
+# Load required packages and specify colors to use in plot
+require(ggplot2)
+require(grid)
+cols <- c("#4cb0ff", "#7dbe84", "#aa0000") # This are the colors to use for the bars
+
+# Make plot
+tiff(filename = "../Display items/Fig 2 - Method comparison (v4).tiff",
+    width = 15, height = 10, units = "cm", res = 300, compression = "lzw")
+p <- ggplot(plot_data, aes(x=Genus, y=Proportion, fill=Area)) +
+        geom_bar(stat="identity", position=position_dodge(), colour="black") +  
+        scale_fill_manual(values = cols) + 
+        theme(axis.title.x = element_blank(), text = element_text(size = 7.5)) +
+        ylab("Probability of finding fossils (relative to random)") + expand_limits(y=c(0,10)) + theme_bw()
+p + theme(legend.margin = unit(0, "cm"), axis.title.x = element_blank(), 
+          axis.text.x  = element_text(face="italic"), legend.text = element_text(size = 7),
+          panel.margin = unit(1, "cm"), panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(), legend.position = c(0.16, 0.85),
+          legend.title = element_blank()) + geom_hline(aes(yintercept=1), linetype = "dashed")
+dev.off()
+```
+
+```{r, echo = FALSE, fig.height = 3.94, fig.width = 4.72, eval=FALSE}
+p <- ggplot(plot_data, aes(x=Genus, y=Proportion, fill=Area)) +
+        geom_bar(stat="identity", position=position_dodge(), colour="black") +  
+        scale_fill_manual(values = cols) + 
+        theme(axis.title.x = element_blank(), text = element_text(size = 8)) +
+        ylab("Fossil density compared to background") + expand_limits(y=c(0,15)) + theme_bw()
+p + theme(legend.margin = unit(0, "cm"), axis.title.x = element_blank(), 
+          axis.text.x  = element_text(face="italic"), legend.text = element_text(size = 8),
+          panel.margin = unit(1, "cm"), panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(), legend.position = c(0.18, 0.86),
+          legend.title = element_blank()) + geom_hline(aes(yintercept=1), linetype = "dashed")
+
+```

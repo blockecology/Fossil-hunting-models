@@ -1,0 +1,170 @@
+---
+title: "Overlaps"
+author: "Sebastian Block et al."
+output: html_document
+---
+
+This script uses the continuous outputs predicted by the climate-envelope models (`multiPCS.shp`) and by the fossil preservation and discovery models (`GridPD.shp`) and converts them into a binary output with a **threshold that maximizes the sum of the sensitivity and specificity**. Then, we will calculate the overlap of those binary outputs (the areas with maximum potential of having fossils of a given taxon). <br><br>
+
+## Data preparation
+
+
+```{r Preparations, eval=FALSE}
+# Load packages
+require(foreign)
+require(dismo)
+
+# Set working directory
+setwd("~/Dropbox/Block et al 2015 Fossil Hunting") 
+
+
+taxaPA <- read.dbf("Data/Grids/taxaPA.dbf") # grid with density of taxa fossils in each grid cell
+taxaPA$taxaPAv <- numeric(nrow(taxaPA))
+taxaPA$taxaA <- numeric(nrow(taxaPA))
+
+for (i in 1:nrow(taxaPA)) {
+        taxaPA$taxaPAv[i] <- ifelse(max(taxaPA[i, 1:5]) > 0, 1, 0)
+        taxaPA$taxaA[i] <- ifelse(max(taxaPA[i, 6:10]) > 0, 1, 0)
+}
+
+taxaPA[taxaPA$taxaA == 1, 11] <- 0 # All fossils
+
+# Make taxa densities presence/absences
+taxaPA$DiproPAv <- ifelse(taxaPA$DiproPAv > 0, 1, 0)
+taxaPA$ZygoPAv <- ifelse(taxaPA$ZygoPAv > 0, 1, 0)
+taxaPA$ProtePAv <- ifelse(taxaPA$ProtePAv > 0, 1, 0)
+taxaPA$ThylaPAv <- ifelse(taxaPA$ThylaPAv > 0, 1, 0)
+taxaPA$GenyPAv <- ifelse(taxaPA$GenyPAv > 0, 1, 0)
+
+taxaPA$DiproA <- ifelse(taxaPA$DiproA > 0, 1, 0)
+taxaPA$ZygoA <- ifelse(taxaPA$ZygoA > 0, 1, 0)
+taxaPA$ProteA <- ifelse(taxaPA$ProteA > 0, 1, 0)
+taxaPA$ThylaA <- ifelse(taxaPA$ThylaA > 0, 1, 0)
+taxaPA$GenyA <- ifelse(taxaPA$GenyA > 0, 1, 0)
+
+# Remove cells with both reliable and unreliable fossils of the testing
+taxaPA[taxaPA$DiproA > 0, 1] <- 0 
+taxaPA[taxaPA$ProteA > 0, 2] <- 0 
+taxaPA[taxaPA$ThylaA > 0, 3] <- 0 
+taxaPA[taxaPA$GenyoA > 0, 4] <- 0 
+taxaPA[taxaPA$ZygoA > 0, 5] <- 0 
+
+gridFP <- read.dbf("Data/Grids/Preservation.dbf")
+taxaPA$fossPAtr <- ifelse(taxaPA$taxaPAv > 0, 0, gridFP$fossPA) # Exclude grid cells
+rm(gridFP)
+
+
+# Combine these presence / absence fields with data frame of model probabilities
+gridPs <- read.dbf("Data/Grids/valPs.dbf")
+gridPs <- cbind(gridPs, taxaPA)
+```
+
+<br>
+
+## Fossil hotspots
+
+Next, we will calculate thresholds for the predictions of the fossil preservation and fossil discovery models, and use the threshold to make binary predictions. Then, we will calculate the overlap of these two binary predictions. This will represent areas where fossils can be preserved *and* found. This are the fossil hotspots. <br><br>
+
+```{r Fossil hotspots, eval=FALSE}
+## Define presences and absences data
+presences <- subset(gridPs, taxaPAv == 1)
+pseudoabs <- subset(gridPs, taxaPAv == 0)
+
+## Fossil preservation
+mod_fp <- glm(fossPAtr ~ offset(Preservati), family="binomial", data = gridPs)
+ep <- evaluate(presences, pseudoabs, mod_fp)
+max(ep@TPR + ep@TNR) - 1
+tp <- threshold(ep, 'spec_sens')
+fppred <- predict(mod_fp)
+fppred <- ifelse(fppred > tp, 1, 0)
+gridPs$fppred <- fppred
+
+## Fossil discovery
+mod_fd <- glm(fossPAtr ~ offset(Discovery), family="binomial", data = gridPs)
+ed <- evaluate(presences, pseudoabs, mod_fd) # Evaluate model (circular validation)
+max(ed@TPR + ed@TNR) - 1 # Discovery model TSS
+td <- threshold(ed, 'spec_sens') # Find threshold that maximizes TSS
+fdpred <- predict(mod_fd) # Make model predictions
+fdpred <- ifelse(fdpred > td, 1, 0) # Use threshold to make binary predictions
+gridPs$fdpred <- fdpred
+
+## Overlap of fossil discovery and preservation areas (fossil hotspots)
+gridPs$hotspots <- gridPs$fppred * gridPs$fdpred
+```
+
+<br>
+
+## Binary climate-envelope predictions
+
+The fossil hotspots are the places to dig if one doesn't have preference for fossils of any particular species. If one does, it is better to calculate a binary output for the SDM of that species, and see where it overlaps whith the fossil hotspots. <br><br>
+
+
+```{r SDMs areas, eval=FALSE}
+# Diprotodon
+presences <- subset(gridPs, DiproPAv == 1)
+pseudoabs <- subset(gridPs, DiproPAv == 0)
+pcem <- glm(DiproA ~ offset(Dipro), family="binomial", data = gridPs)
+epcem <- evaluate(presences, pseudoabs, pcem)
+max(epcem@TPR + epcem@TNR) - 1 # True Skill Statistic
+tdip <- threshold(epcem, 'spec_sens')
+dipropred <- predict(pcem)
+dipropred <- ifelse(dipropred > tdip, 1, 0)
+gridPs$dipropred <- dipropred
+gridPs$diprover <- dipropred * gridPs$hotspots
+
+# Zygomaturus
+presences <- subset(gridPs, ZygoPAv == 1)
+pseudoabs <- subset(gridPs, ZygoPAv == 0)
+pcem <- glm(ZygoA ~ offset(Zygo), family="binomial", data = gridPs)
+epcem <- evaluate(presences, pseudoabs, pcem)
+max(epcem@TPR + epcem@TNR) - 1 # True Skill Statistic
+tzyg <- threshold(epcem, 'spec_sens')
+zygopred <- predict(pcem)
+zygopred <- ifelse(zygopred > tzyg, 1, 0)
+gridPs$zygopred <- zygopred
+gridPs$zygover <- zygopred * gridPs$hotspots
+
+# Protemnodon
+presences <- subset(gridPs, ProtePAv == 1)
+pseudoabs <- subset(gridPs, ProtePAv == 0)
+pcem <- glm(ProteA ~ offset(Prote), family="binomial", data = gridPs)
+epcem <- evaluate(presences, pseudoabs, pcem)
+max(epcem@TPR + epcem@TNR) - 1 # True Skill Statistic
+tprot <- threshold(epcem, 'spec_sens')
+protepred <- predict(pcem)
+protepred <- ifelse(protepred > tprot, 1, 0)
+gridPs$protepred <- protepred
+gridPs$protever <- protepred * gridPs$hotspots
+
+# Thylacoleo
+presences <- subset(gridPs, ThylaPAv == 1)
+pseudoabs <- subset(gridPs, ThylaPAv == 0)
+pcem <- glm(ThylaA ~ offset(Thyla), family="binomial", data = gridPs)
+epcem <- evaluate(presences, pseudoabs, pcem)
+max(epcem@TPR + epcem@TNR) - 1 # True Skill Statistic
+tthy <- threshold(epcem, 'spec_sens')
+thylapred <- predict(pcem)
+thylapred <- ifelse(thylapred > tthy, 1, 0)
+gridPs$thylapred <- thylapred
+gridPs$thylaver <- thylapred * gridPs$hotspots
+
+# Genyornis
+presences <- subset(gridPs, GenyPAv == 1)
+pseudoabs <- subset(gridPs, GenyPAv == 0)
+pcem <- glm(GenyA ~ offset(Geny), family="binomial", data = gridPs)
+epcem <- evaluate(presences, pseudoabs, pcem)
+max(epcem@TPR + epcem@TNR) - 1 # True Skill Statistic
+tgen <- threshold(epcem, 'spec_sens')
+genypred <- predict(pcem)
+genypred <- ifelse(genypred > tgen, 1, 0)
+gridPs$genypred <- genypred
+gridPs$genyver <- genypred * gridPs$hotspots
+```
+
+<br>
+Finally, let's save all our calculations in a new shapefile called `3P.shp`
+
+```{r Saving dbf, eval=FALSE}
+write.dbf(gridPs, "Data/Grids/3P.dbf")
+```
+

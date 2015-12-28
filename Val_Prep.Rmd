@@ -1,0 +1,75 @@
+---
+title: "Validation Preparation"
+author: "Sebastian Block et al."
+output: html_document
+---
+
+This script is simply to prepare the models outputs for the final validation steps. <br><br>
+
+```{r Loading and cleaning SDM, message = FALSE, eval=FALSE}
+# Set working directory
+setwd("~/Dropbox/Block et al 2015 Fossil Hunting") 
+
+# Load attribute table of multiSDMs.shp
+require(foreign)
+gridPCS <- read.dbf("Data/Grids/multiPCS.dbf")
+
+# Rename columns with genus names (check that the genera are actually in this order)
+names(gridPCS) <- c("Diprotodon", "Zygomaturus", "Protemnodon", "Thylacoleo", "Genyornis")
+```
+
+<br>
+Since we lacked true absence data to calibate our models, model outputs can only be interpreted as a ranking of the suitability of potential of grid cells for species occurrence, rather than probabilities or likelihoods. Hence, we will transform the raw output into a real grid cell ranking, which will make the results more intuitive to interpret. <br> <br>
+
+```{r Scaling probabilities SDM, eval=FALSE}
+# Calculate ranks of SDM outputs
+gridPCS$Dipro <- rank(gridPCS$Diprotodon) / nrow(gridPCS)
+gridPCS$Zygo <- rank(gridPCS$Zygomaturus) / nrow(gridPCS)
+gridPCS$Prote <- rank(gridPCS$Protemnodon) / nrow(gridPCS)
+gridPCS$Thyla <- rank(gridPCS$Thylacoleo) / nrow(gridPCS)
+gridPCS$Geny <- rank(gridPCS$Genyornis) / nrow(gridPCS)
+```
+
+<br>
+Now, let's load and rank the outputs of the fossil preservation and discovery models. <br><br>
+
+```{r Load & Scale GridProbs, eval=FALSE}
+# Load attribute table of GridProbs.shp
+gridPD <- read.dbf("Data/Grids/GridPD_val.dbf")
+names(gridPD) <- c("Preservation", "Discovery")
+
+# Rank outputs
+gridPD$Preservation <- rank(gridPD$Preservation) / nrow(gridPD)
+gridPD$Discovery <- rank(gridPD$Discovery) / nrow(gridPD)
+```
+
+<br>
+Now, let's combine `gridPCS` and `gridPD`, calculate the final ranking of fossil potential (*i.e.*, the average of the rankings of palaeo-climate, preservation, and discovery suitabilities). <br><br>
+
+```{r Final P, eval=FALSE}
+# Combine data frames
+gridPCS <- gridPCS[,6:10]
+FG <- cbind(gridPCS, gridPD)
+
+# Calculate final (combined) fossil potential for each taxon
+FG$diproP <- (FG$Dipro + FG$Preservation + FG$Discovery) / 3
+FG$zygoP <- (FG$Zygo + FG$Preservation + FG$Discovery) / 3
+FG$proteP <- (FG$Prote + FG$Preservation + FG$Discovery) / 3
+FG$thylaP <- (FG$Thyla + FG$Preservation + FG$Discovery) / 3
+FG$genyP <- (FG$Geny + FG$Preservation + FG$Discovery) / 3
+
+# And rank them
+FG$diproP <- rank(FG$diproP) / nrow(FG)
+FG$zygoP <- rank(FG$zygoP) / nrow(FG)
+FG$proteP <- rank(FG$proteP) / nrow(FG)
+FG$thylaP <- rank(FG$thylaP) / nrow(FG)
+FG$genyP <- rank(FG$genyP) / nrow(FG)
+```
+
+
+
+```{r Write file, eval=FALSE}
+# Write dbf file 
+write.dbf(FG, "Data/Grids/valPs.dbf")
+```
+

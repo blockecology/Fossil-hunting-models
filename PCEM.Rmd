@@ -1,0 +1,715 @@
+---
+title: "Climate Envelope Models"
+author: "Sebastian Block et al."
+output: html_document
+---
+
+This is the code we used to model species distribution from fossil data for the paper Block *et al*. (2016). 
+
+## Loading and cleaning the data
+
+First of all, we have to load and clean the [FosSahul database](http://portal.aekos.org.au/dataset/216103). This is a csv file in the folder called `Data`.
+
+**NOTE**: Don't forget to set your working directory to the folder containing all the files, in this case, the folder `Block et al. (2016) Fossil Hunting`. <br> <br>
+
+```{r Select taxa, eval=FALSE}
+# First of all, select taxon (in this case, genus) for which we want to model the climate envelope
+genus <- "Zygomaturus"  # For example, Zygomaturus
+```
+
+
+```{r Loading Data, message=FALSE, eval=FALSE}
+setwd("~/Dropbox/Block et al 2015 Fossil Hunting") # Change this path to match the location of the directory in your computer
+
+# Load dplyr package to process the data 
+# if you haven't installed dplyr before, do so with install.packages("dplyr")
+library(dplyr)
+
+# Loading and filtering data
+## Load fossil database
+fossils <- read.csv("Data/fossils.csv")
+```
+
+
+Our palaeo-climate data is in raster format. Each raster covers the entire globe and the pixel size is 1º. Hence, each raster has 64,800 pixels (180 from North to South and 360 from East to West). To know in which of these pixels each of our fossils falls, we will load a text file that has the pixel "coordinates" of every fossil and attach the coordinates as a new column call `cellid`. <br> <br>
+
+
+
+```{r Attaching cellid, eval=FALSE}
+grid_id <- read.table("../Data/Sahul_gridcellID.txt", quote="\"")
+fossils$cellid <- paste(grid_id$V4, grid_id$V5, sep=",")
+rm(grid_id)
+```
+
+
+Now, we can continue cleaning the database. First we will correct some coordinates that are wrong in the original database. Then we will select just the columns that could be useful for our current purposes. <br> <br>
+
+
+```{r Cleaning Data, eval=FALSE}
+## Correct wrong coordinates for Millicent, Ningaloo and TEC fossils
+fossils[fossils$Cave.Site == "Millicent", 5] <- 140.4
+
+fossils[fossils$Cave.Site == "Ningaloo", 4] <- -22.7 
+fossils[fossils$Cave.Site == "Ningaloo", 5] <- 113.674
+
+fossils[fossils$Cave.Site == "Tight Entrance Cave", 4] <- -34.067 
+fossils[fossils$Cave.Site == "Tight Entrance Cave", 5] <- 115.167
+
+## Select variables and rows that we will use
+fossils <- select(fossils, Latitude:Class, Status, Megafauna, Age.calib., Sd.calib., LR, Context, cellid)
+
+## Assign correct classes to variables
+fossils$Latitude <- as.numeric(as.character(fossils$Latitude))
+fossils$Longitude <- as.numeric(as.character(fossils$Longitude))
+fossils$Temp <- as.numeric(as.character(fossils$Temp))
+fossils$Rain <- as.numeric(as.character(fossils$Rain))
+fossils$cellid <- as.factor(fossils$cellid)
+fossils$Sd.calib. <- as.numeric(as.character(fossils$Sd.calib.))
+
+## Assign 0 to all fossils without values for dating uncertainity (Sd.calib)
+fossils[is.na(fossils$Sd.calib.), 13] <- 0
+
+## Divide Age.calib. and Sd.calib. between 1000
+fossils$Age.calib. <- fossils$Age.calib. / 1000
+fossils$Sd.calib. <- fossils$Sd.calib. / 1000
+        
+## Filter missing and erroneous data
+fossils <- filter(fossils, !is.na(Latitude))
+fossils <- filter(fossils, Longitude != 0)
+
+## Filter only Australian fossils
+fossils <- filter(fossils, Latitude < -5)
+
+## Drop Homo rows
+fossils <- filter(fossils, Species != "Homo")
+
+## Filter bad quality fossils
+fossB <- filter(fossils, LR != "A" & LR != "A (*)" & LR != "A(*)" & LR != "A*/A" & LR != "A*")
+
+## Drop fossils with bad-quality dates, keep just A and A* (this are the ones we can use for the SDM)
+fossA <- filter(fossils, LR == "A" | LR == "A (*)" | LR == "A(*)" | LR == "A*/A" | LR == "A*")
+
+## Add a column with the age for which we have climate data that is closest to the fossil age
+## Finding the right time
+climate_times <- c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,24,
+                   26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64,66,68,
+                   70,72,74,76,78,80,84,88,92,96,100,104,108,112,116,120)
+
+
+library(FastImputation)
+fossA$Age2 <- LimitToSet(fossA$Age.calib., climate_times)
+
+# To account for date uncertainity, we also create columns with age plus/minus 1 and 2 standard deviations
+fossA$Age2plsd <- LimitToSet(fossA$Age.calib. + fossA$Sd.calib., climate_times)
+fossA$Age2mnsd <- LimitToSet(fossA$Age.calib. - fossA$Sd.calib., climate_times)
+fossA$Age2pl2sd <- LimitToSet(fossA$Age.calib. + 2 * fossA$Sd.calib., climate_times)
+fossA$Age2mn2sd <- LimitToSet(fossA$Age.calib. - 2 * fossA$Sd.calib., climate_times)
+
+
+## Context - Keep only fossils in a context that makes their dates reliable (exclude above and below)
+fossA <- filter(fossA, Context != "A" & Context != "B")
+
+## Remove very old fossils for which we don't have paleoclimate data
+fossA <- filter(fossA, !is.na(Temp))
+
+## Change order of Latitude and Longitude
+fossA <- fossA[,c(2,1,3:21)]
+```
+
+## Climate-Envelope Models
+
+### Presence and pseudo-absence selection
+
+Now that we loaded and processed the fossil data, we have to select a subset the data corresponding to the taxon we chose above. 
+
+
+```{r, eval=FALSE}
+# Select genus and prepare data
+paleosp <- subset(fossA, gen.indetus == genus) 
+```
+
+<br>
+The next step is to extract the climate information for each fossil. We will extract the information from the climate raster with closest time to the fossil's age, as well as from the mean age plus and minus one and two standard deviations. Then we will calculate a weigthed average using a normal density function `dnorm` to calculate the weights for each age's climate, so that the farther a climate time is from the fossil's mean age, the smaller weight it will receive. <br><br>
+
+```{r Fossil climate extraction, eval=FALSE}
+# Load packages 
+require(raster)
+require(dismo)
+
+# Create a data frame to store the coordinates, climate data and age of each fossil
+presences <- data.frame(Longitude = numeric(), Latitude = numeric(),
+                        Temp = numeric(), Rain = numeric(), Age2 = factor())
+
+# This loop extracts climate data for each fossil
+for(i in 1:nrow(paleosp)){
+        
+        if(paleosp$Sd.calib.[i] != 0) {
+                prespts <- paleosp[i,1:2]
+                
+                # Mean age
+                age <- levels(as.factor(paleosp$Age2[i]))
+                if(as.numeric(age) < 10) age <- paste("00", age, sep="")
+                if(as.numeric(age) > 9 & as.numeric(age) < 100) age <- paste("0", age, sep="")
+                pathclim <- paste("../Data/Paleoclimate/Climate/", age, ".grd", sep="")
+                paleoclim <- brick(pathclim)
+                mean.presvals <- extract(paleoclim, prespts)
+                
+                # Age plus 1 sd
+                age <- levels(as.factor(paleosp$Age2plsd[i]))
+                if(as.numeric(age) < 10) age <- paste("00", age, sep="")
+                if(as.numeric(age) > 9 & as.numeric(age) < 100) age <- paste("0", age, sep="")
+                pathclim <- paste("../Data/Paleoclimate/Climate/", age, ".grd", sep="")
+                paleoclim <- brick(pathclim)
+                pl1sd.presvals <- extract(paleoclim, prespts)  
+                
+                # Age minus 1 sd
+                age <- levels(as.factor(paleosp$Age2mnsd[i]))
+                if(as.numeric(age) < 10) age <- paste("00", age, sep="")
+                if(as.numeric(age) > 9 & as.numeric(age) < 100) age <- paste("0", age, sep="")
+                pathclim <- paste("../Data/Paleoclimate/Climate/", age, ".grd", sep="")
+                paleoclim <- brick(pathclim)
+                mn1sd.presvals <- extract(paleoclim, prespts)
+                
+                # Age plus 2 sd
+                age <- levels(as.factor(paleosp$Age2pl2sd[i]))
+                if(as.numeric(age) < 10) age <- paste("00", age, sep="")
+                if(as.numeric(age) > 9 & as.numeric(age) < 100) age <- paste("0", age, sep="")
+                pathclim <- paste("../Data/Paleoclimate/Climate/", age, ".grd", sep="")
+                paleoclim <- brick(pathclim)
+                pl2sd.presvals <- extract(paleoclim, prespts)
+                
+                # Age minus 2 sd
+                age <- levels(as.factor(paleosp$Age2mn2sd[i]))
+                if(as.numeric(age) < 10) age <- paste("00", age, sep="")
+                if(as.numeric(age) > 9 & as.numeric(age) < 100) age <- paste("0", age, sep="")
+                pathclim <- paste("../Data/Paleoclimate/Climate/", age, ".grd", sep="")
+                paleoclim <- brick(pathclim)
+                mn2sd.presvals <- extract(paleoclim, prespts)
+                
+                # Weighted average
+                w <- dnorm(c(paleosp$Age2[i], 
+                             paleosp$Age2plsd[i],
+                             paleosp$Age2mnsd[i],
+                             paleosp$Age2pl2sd[i],
+                             paleosp$Age2mn2sd[i]), paleosp$Age.calib.[i], paleosp$Sd.calib.[i])
+                
+                t <- c(mean.presvals[,1], pl1sd.presvals[,1], mn1sd.presvals[,1], 
+                       pl2sd.presvals[,1], mn2sd.presvals[,1])
+                
+                r <- c(mean.presvals[,2], pl1sd.presvals[,2], mn1sd.presvals[,2], 
+                       pl2sd.presvals[,2], mn2sd.presvals[,2])
+                
+                if (sum(w) > 0) {
+                         # Final values
+                        presx <- data.frame(Longitude = prespts[,1], Latitude = prespts[,2], 
+                                            Temp = weighted.mean(t, w), Rain = weighted.mean(r, w), 
+                                            Age2 = paleosp$Age2[i])
+                        presences <- rbind(presences, presx)
+                        
+                        rm(pathclim, paleoclim, prespts, presx, w, t, r, mean.presvals, pl1sd.presvals, 
+                           mn1sd.presvals, pl2sd.presvals, mn2sd.presvals, age)
+                }
+                else {
+                        # Final values
+                        presx <- data.frame(Longitude = prespts[,1], Latitude = prespts[,2], 
+                                            Temp = mean.presvals[,1], Rain = mean.presvals[,2], 
+                                            Age2 = paleosp$Age2[i])
+                        presences <- rbind(presences, presx)
+                        
+                        rm(pathclim, paleoclim, prespts, presx, mean.presvals, age)
+                }
+                
+                
+        }
+        else {
+                prespts <- paleosp[i,1:2]
+                
+                # Mean age
+                age <- levels(as.factor(paleosp$Age2[i]))
+                if(as.numeric(age) < 10) age <- paste("00", age, sep="")
+                if(as.numeric(age) > 9 & as.numeric(age) < 100) age <- paste("0", age, sep="")
+                pathclim <- paste("../Data/Paleoclimate/Climate/", age, ".grd", sep="")
+                paleoclim <- brick(pathclim)
+                mean.presvals <- extract(paleoclim, prespts)
+                
+                # Final values
+                presx <- data.frame(Longitude = prespts[,1], Latitude = prespts[,2], 
+                                    Temp = mean.presvals[,1], Rain = mean.presvals[,2], 
+                                    Age2 = paleosp$Age2[i])
+                presences <- rbind(presences, presx)
+                
+                rm(pathclim, paleoclim, prespts, presx, mean.presvals, age)
+        }
+}
+
+# Remove any duplicate presences
+presences <- unique(presences)
+```
+
+<br>
+Now, we will select pseudo-absences and extract their climate data. To have the same sampling bias in the pseudo-absences as in the presences, we will take pseudo-absences from other fossil locations, but only those which are outside the climate envelope of the species (outside of the 5th and 95th quantiles). We will pick pseudo-absences in this way in each time-slice, and then pick randomly 10 times more pseudo-absences than the number of fossils in that time-slice. If there are not enough pseudo-absences to select 10 times more as the number of fossils, we just take all that we have. <br><br>
+
+```{r Pseudo-absence selection, eval=FALSE}
+# Paleogenus' climate envelope (pseudo-absence will be taken from outside this envelope)
+ce.temp <- quantile(presences$Temp, c(0.05, 0.95))
+ce.rain <- quantile(presences$Rain, c(0.05, 0.95))
+
+# Fossil pseudoabs
+cellids <- as.character(unique(fossils$cellid)) # Pixels with fossils, from which to take pseudo-absences
+
+# Let's extract the geographic coordinates of the pseudo-absences by taken the Lat and Long of first fossil in each pixel
+psabs.xy <- data.frame(x = numeric(length(cellids)), y = numeric(length(cellids))) 
+for (i in 1:length(cellids)) {
+        cid <- subset(fossils, cellid == cellids[i])
+        psabs.xy[i,1:2] <- cid[1,c(2,1)]
+        rm(cid)
+}
+
+# Pseudoabsence selection
+paleo_ages <- levels(as.factor(paleosp$Age2))
+
+ages <- paleo_ages
+
+for (i in 1:length(ages)){
+        if(as.numeric(ages[i]) < 10) ages[i] <- paste("00", ages[i], sep="")
+        if(as.numeric(ages[i]) > 9 & as.numeric(ages[i]) < 100) ages[i] <- paste("0", ages[i], sep="")
+}
+
+pseudoabs <- data.frame(Longitude = numeric(), Latitude = numeric(),
+                        Temp = numeric(), Rain = numeric(), Age2 = factor())
+
+
+# Pseudoabsences
+for(i in 1:length(ages)){
+        pathclim <- paste("../Data/Paleoclimate/Climate/", ages[i], ".grd", sep="")
+        paleoclim <- brick(pathclim)
+        pspagex <- subset(presences, Age2 == paleo_ages[i])
+        n <- nrow(pspagex) * 10
+        absvals <- as.data.frame(extract(paleoclim, psabs.xy))
+        absvals <- subset(absvals, Temp < ce.temp[1] | Temp > ce.temp[2] | Rain < ce.rain[1] | Rain > ce.rain[2])
+        if (n <= nrow(absvals)) {absvals <- absvals[sample(nrow(absvals), n), ]}
+        pts <- psabs.xy[as.numeric(row.names(absvals)), ]
+        pseudoabsx <- data.frame(Longitude = pts[,1], Latitude = pts[,2], Temp = absvals[,1], 
+                                 Rain = absvals[,2], Age2 = rep(paleo_ages[i], nrow(absvals)))
+        pseudoabs <- rbind(pseudoabs, pseudoabsx)
+        rm(pathclim, paleoclim, pspagex, n, absvals, pseudoabsx)
+}
+```
+
+### Model cross-validations
+
+We are now ready to run the models and validate them. We can start with a 5-fold cross validation using the data we extracted from all time-slices. Since this data points come from different places and from different ages, we can call it a **spatio-temporal validation**. 
+
+```{r Spatio-temporal validation, eval=FALSE}
+## Making training and test groups with k-folding
+k <- 5
+pr.group <- kfold(presences, k)
+pa.group <- kfold(pseudoabs, k)
+eb <- list()
+ex <- list()
+eg <- list()
+
+for(i in 1:k){
+        pres_train <- presences[pr.group != i, 3:4]
+        pres_test <- presences[pr.group == i, 3:4]
+        
+        backg_train <- pseudoabs[pa.group != i, 3:4]
+        backg_test <- pseudoabs[pa.group == i, 3:4]
+        
+        train <- rbind(pres_train, backg_train)
+        pb_train <- c(rep(1, nrow(pres_train)), rep(0, nrow(backg_train)))
+        envtrain <- data.frame( cbind(pa=pb_train, train) )
+        
+        ## Bioclim
+        bc <- bioclim(pres_train)
+        eb[[i]] <- evaluate(pres_test, backg_test, bc)
+        
+        ## Maxent
+        xm <- maxent(train, envtrain$pa)
+        ex[[i]] <- evaluate(pres_test, backg_test, xm)
+        
+        ## GLM binomial logit
+        gm1 <- glm(pa ~ Temp * Rain, family = binomial(link = "logit"), data = envtrain)
+        eg[[i]] <- evaluate(pres_test, backg_test, gm1)
+}
+
+# Calculate the True Skill Statistics for each model
+sbtss <- sapply( eb, function(x){ max(x@TPR + x@TNR) - 1} )
+sxtss <- sapply( ex, function(x){ max(x@TPR + x@TNR) - 1} )
+sgtss <- sapply( eg, function(x){ max(x@TPR + x@TNR) - 1} )
+
+paste("Mean TSS of Bioclim is ", mean(sbtss), sep = "")
+paste("Mean TSS of MaxEnt is ", mean(sxtss), sep = "")
+paste("Mean TSS of GLM is ", mean(sgtss), sep = "")
+```
+
+<br>
+Now we can do a **temporal validation** by training the models with the data from all except one timeslice, and testing them with the fossils of that timeslice. <br> <br>
+
+```{r Temporal validation, eval=FALSE}
+teb <- list()
+tex <- list()
+teg <- list()
+
+for(i in 1:length(ages)){
+        pres_train <- presences[presences$Age2 != paleo_ages[i], 3:4]
+        pres_test <- presences[presences$Age2 == paleo_ages[i], 3:4]
+        
+        backg_train <- pseudoabs[pseudoabs$Age2 != paleo_ages[i], 3:4]
+        backg_test <- pseudoabs[pseudoabs$Age2 == paleo_ages[i], 3:4]
+        
+        train <- rbind(pres_train, backg_train)
+        pb_train <- c(rep(1, nrow(pres_train)), rep(0, nrow(backg_train)))
+        envtrain <- data.frame( cbind(pa=pb_train, train) )
+        
+        ## Bioclim
+        bc <- bioclim(pres_train)
+        teb[[i]] <- evaluate(pres_test, backg_test, bc)
+        
+        ## Maxent
+        xm <- maxent(train, envtrain$pa)
+        tex[[i]] <- evaluate(pres_test, backg_test, xm)
+        
+        ## GLM binomial logit
+        gm1 <- glm(pa ~ Temp * Rain, family = binomial(link = "logit"), data = envtrain)
+        teg[[i]] <- evaluate(pres_test, backg_test, gm1)
+}
+
+# Calculate True Skill Statistics for each model
+tbtss <- sapply( teb, function(x){ max(x@TPR + x@TNR) - 1} ) # Bioclim
+txtss <- sapply( tex, function(x){ max(x@TPR + x@TNR) - 1} ) # MaxEnt
+tgtss <- sapply( teg, function(x){ max(x@TPR + x@TNR) - 1} ) # GLM
+
+paste("Mean TSS of Bioclim is ", mean(tbtss), sep = "")
+paste("Mean TSS of MaxEnt is ", mean(txtss), sep = "")
+paste("Mean TSS of GLM is ", mean(tgtss), sep = "")
+
+# Let's remove some objects from our Global Environment that we won't need any more
+rm(xm, tex, teg, teb, pr.group, pb_train, pa.group, k, i, gm1, ex, eg, eb, bc, backg_test, backg_train,
+   envtrain, pres_test, pres_train, pts)
+```
+
+<br>
+
+### Model predictions
+
+Now we can use the TSS values from the previous validations as a weight to calculate a weighted average of the model predictions (or simply to select the best performing model). This time we will use all the data to train the models. <br> <br>
+
+```{r SDM predictions, eval=FALSE}
+# Create vector with all time slices' names before taxa's extinction
+taxa.ages <- climate_times[climate_times >= as.numeric(min(ages))]
+taxa.ages <- as.character(taxa.ages)
+
+for (i in 1:length(taxa.ages)){
+        if(as.numeric(taxa.ages[i]) < 10) taxa.ages[i] <- paste("00", taxa.ages[i], sep="")
+        if(as.numeric(taxa.ages[i]) > 9 & as.numeric(taxa.ages[i]) < 100) taxa.ages[i] <- paste("0", taxa.ages[i], sep="")
+}
+
+# Data for complete models
+presence <- presences[, 3:4]
+backg <- pseudoabs[, 3:4]
+all <- rbind(presence, backg)
+pb <- c(rep(1, nrow(presence)), rep(0, nrow(backg)))
+env <- data.frame( cbind(pa=pb, all) )
+
+# If you want to use just the best model, set the value of 'method' to 1
+# If you prefer to calculate a weighted average of the three models, set the value of 'method' to 2
+method <- 2
+
+# If you selected method 1, we will do this:
+if (method == 1) {
+        # Complete model - Use the best model
+        if(mean(c(sxtss, txtss)) > mean(c(sbtss, tbtss)) & mean(c(sxtss, txtss)) > mean(c(sgtss, tgtss))) {
+                sdm <- maxent(all, env$pa)
+                bestSDM <- "Maxent"
+        }
+        
+        if(mean(c(sbtss, tbtss)) > mean(c(sxtss, txtss)) & mean(c(sbtss, tbtss)) > mean(c(sgtss, tgtss))) {
+                sdm <- bioclim(presence)
+                bestSDM <- "Bioclim"
+        }
+        
+        if(mean(c(sgtss, tgtss)) > mean(c(sxtss, txtss)) & mean(c(sgtss, tgtss)) > mean(c(sbtss, tbtss))) {
+                sdm <- glm(pa ~ Temp * Rain, family = binomial(link = "logit"), data = env)
+                bestSDM <- "GLM"
+        }
+        
+        
+        # Prediction for first time slice
+        ## Load paleoclimate
+        pathclim <- paste("Data/Paleoclimate/Climate/", taxa.ages[1], ".grd", sep="")
+        paleoclim <- brick(pathclim)
+        
+        ## Make prediction
+        pred <- predict(paleoclim, sdm)
+        if (bestSDM == "GLM") { pred <- exp(pred)/(1+exp(pred)) }
+        
+        sdxtime <- pred
+        
+        # Predictions for the rest of the time-slices and stack them in a Raster Stack
+        for(i in 2:length(taxa.ages)){
+                pathclim <- paste("../Data/Paleoclimate/Climate/", taxa.ages[i], ".grd", sep="")
+                paleoclim <- brick(pathclim)
+                pred <- predict(paleoclim, sdm)
+                if (bestSDM == "GLM") { pred <- exp(pred)/(1+exp(pred)) }
+                sdxtime <- addLayer(sdxtime, pred)
+        }
+        
+        # Calculate the average of the predictions across all time-slices
+        meansdxtime <- mean(sdxtime)
+}
+
+# If instead you selected method 2 (weighted average), we will do this:
+if (method == 2) {
+        # Calculate mean TSS
+        btss <- mean(c(sbtss, tbtss))
+        xtss <- mean(c(sxtss, txtss))
+        gtss <- mean(c(sgtss, tgtss))
+        
+        # Complete models
+        bc <- bioclim(presence)
+        xm <- maxent(all, env$pa)
+        gm1 <- glm(pa ~ Temp * Rain, family = binomial(link = "logit"), data = env)
+        
+        # Prediction for first time-slice
+        pathclim <- paste("../Data/Paleoclimate/Climate/", taxa.ages[1], ".grd", sep="")
+        paleoclim <- brick(pathclim)
+                
+        bp <- predict(paleoclim, bc)
+        xp <- predict(paleoclim, xm)
+        gp <- predict(paleoclim, gm1)
+        gp <- exp(gp)/(1+exp(gp))
+        
+        twap <- weighted.mean(stack(bp, xp, gp), c(btss, xtss, gtss))
+        
+        sdxtime <- twap
+        
+        for(i in 2:length(taxa.ages)){
+                pathclim <- paste("../Data/Paleoclimate/Climate/", taxa.ages[i], ".grd", sep="")
+                paleoclim <- brick(pathclim)
+                
+                bp <- predict(paleoclim, bc)
+                xp <- predict(paleoclim, xm)
+                gp <- predict(paleoclim, gm1)
+                gp <- exp(gp)/(1+exp(gp))
+                
+                twap <- weighted.mean(stack(bp, xp, gp), c(btss, xtss, gtss))
+                
+                sdxtime <- addLayer(sdxtime, twap)
+        }
+        
+        meansdxtime <- mean(sdxtime)
+}
+```
+
+<br>
+And finally, let's repeat all the process other 29 times selecting different sets ot pseudo-absences.
+<br> <br>
+
+```{r Iterations, warning=FALSE, message=FALSE, eval=FALSE}
+for (r in 1:29){
+        # Pseudoabsences
+        pseudoabs <- data.frame(Longitude = numeric(), Latitude = numeric(),
+                        Temp = numeric(), Rain = numeric(), Age2 = factor())
+        for(i in 1:length(ages)){
+                pathclim <- paste("../Data/Paleoclimate/Climate/", ages[i], ".grd", sep="")
+                paleoclim <- brick(pathclim)
+                pspagex <- subset(presences, Age2 == paleo_ages[i])
+                n <- nrow(pspagex) * 10
+                absvals <- as.data.frame(extract(paleoclim, psabs.xy))
+                absvals <- subset(absvals, Temp < ce.temp[1] | Temp > ce.temp[2] | Rain < ce.rain[1] | Rain > ce.rain[2])
+                if (n <= nrow(absvals)) {absvals <- absvals[sample(nrow(absvals), n), ]}
+                pts <- psabs.xy[as.numeric(row.names(absvals)), ]
+                pseudoabsx <- data.frame(Longitude = pts[,1], Latitude = pts[,2], Temp = absvals[,1], 
+                                         Rain = absvals[,2], Age2 = rep(paleo_ages[i], nrow(absvals)))
+                pseudoabs <- rbind(pseudoabs, pseudoabsx)
+                rm(pathclim, paleoclim, pspagex, n, absvals, pseudoabsx)
+                }
+        
+                ## Making training and test groups with k-folding
+                k <- 5
+                pr.group <- kfold(presences, k)
+                pa.group <- kfold(pseudoabs, k)
+                eb <- list()
+                ex <- list()
+                eg <- list()
+                
+                for(i in 1:k){
+                        pres_train <- presences[pr.group != i, 3:4]
+                        pres_test <- presences[pr.group == i, 3:4]
+                        
+                        backg_train <- pseudoabs[pa.group != i, 3:4]
+                        backg_test <- pseudoabs[pa.group == i, 3:4]
+                        
+                        train <- rbind(pres_train, backg_train)
+                        pb_train <- c(rep(1, nrow(pres_train)), rep(0, nrow(backg_train)))
+                        envtrain <- data.frame( cbind(pa=pb_train, train) )
+                        
+                        ## Bioclim
+                        bc <- bioclim(pres_train)
+                        eb[[i]] <- evaluate(pres_test, backg_test, bc)
+                        
+                        ## Maxent
+                        xm <- maxent(train, envtrain$pa)
+                        ex[[i]] <- evaluate(pres_test, backg_test, xm)
+                        
+                        ## GLM binomial logit
+                        gm1 <- glm(pa ~ Temp * Rain, family = binomial(link = "logit"), data = envtrain)
+                        eg[[i]] <- evaluate(pres_test, backg_test, gm1)
+                }
+                
+                # Calculate the True Skill Statistics for each model
+                sbtss <- sapply( eb, function(x){ max(x@TPR + x@TNR) - 1} )
+                sxtss <- sapply( ex, function(x){ max(x@TPR + x@TNR) - 1} )
+                sgtss <- sapply( eg, function(x){ max(x@TPR + x@TNR) - 1} )
+        
+                # Temporal validation
+                teb <- list()
+                tex <- list()
+                teg <- list()
+                
+                for(i in 1:length(ages)){
+                        pres_train <- presences[presences$Age2 != paleo_ages[i], 3:4]
+                        pres_test <- presences[presences$Age2 == paleo_ages[i], 3:4]
+                        
+                        backg_train <- pseudoabs[pseudoabs$Age2 != paleo_ages[i], 3:4]
+                        backg_test <- pseudoabs[pseudoabs$Age2 == paleo_ages[i], 3:4]
+                        
+                        train <- rbind(pres_train, backg_train)
+                        pb_train <- c(rep(1, nrow(pres_train)), rep(0, nrow(backg_train)))
+                        envtrain <- data.frame( cbind(pa=pb_train, train) )
+                        
+                        ## Bioclim
+                        bc <- bioclim(pres_train)
+                        teb[[i]] <- evaluate(pres_test, backg_test, bc)
+                        
+                        ## Maxent
+                        xm <- maxent(train, envtrain$pa)
+                        tex[[i]] <- evaluate(pres_test, backg_test, xm)
+                        
+                        ## GLM binomial logit
+                        gm1 <- glm(pa ~ Temp * Rain, family = binomial(link = "logit"), data = envtrain)
+                        teg[[i]] <- evaluate(pres_test, backg_test, gm1)
+                }
+                
+                # Calculate True Skill Statistics for each model
+                tbtss <- sapply( teb, function(x){ max(x@TPR + x@TNR) - 1} ) # Bioclim
+                txtss <- sapply( tex, function(x){ max(x@TPR + x@TNR) - 1} ) # MaxEnt
+                tgtss <- sapply( teg, function(x){ max(x@TPR + x@TNR) - 1} ) # GLM
+        
+                # Let's remove some objects from our Global Environment that we won't need any more
+                rm(xm, tex, teg, teb, pr.group, pb_train, pa.group, k, i, gm1, ex, eg, eb, bc, backg_test, backg_train,
+                   envtrain, pres_test, pres_train, pts)
+        
+                # Data for complete models
+                presence <- presences[, 3:4]
+                backg <- pseudoabs[, 3:4]
+                all <- rbind(presence, backg)
+                pb <- c(rep(1, nrow(presence)), rep(0, nrow(backg)))
+                env <- data.frame( cbind(pa=pb, all) )
+        
+                # If you selected method 1, we will do this:
+                if (method == 1) {
+                        # Complete model - Use the best model
+                        if(mean(c(sxtss, txtss)) > mean(c(sbtss, tbtss)) & mean(c(sxtss, txtss)) > mean(c(sgtss, tgtss))) {
+                                sdm <- maxent(all, env$pa)
+                                bestSDM <- "Maxent"
+                        }
+                        
+                        if(mean(c(sbtss, tbtss)) > mean(c(sxtss, txtss)) & mean(c(sbtss, tbtss)) > mean(c(sgtss, tgtss))) {
+                                sdm <- bioclim(presence)
+                                bestSDM <- "Bioclim"
+                        }
+                        
+                        if(mean(c(sgtss, tgtss)) > mean(c(sxtss, txtss)) & mean(c(sgtss, tgtss)) > mean(c(sbtss, tbtss))) {
+                                sdm <- glm(pa ~ Temp * Rain, family = binomial(link = "logit"), data = env)
+                                bestSDM <- "GLM"
+                        }
+                        
+                        
+                        # Prediction for first time slice
+                        ## Load paleoclimate
+                        pathclim <- paste("Data/Paleoclimate/Climate/", taxa.ages[1], ".grd", sep="")
+                        paleoclim <- brick(pathclim)
+                        
+                        ## Make prediction
+                        pred <- predict(paleoclim, sdm)
+                        if (bestSDM == "GLM") { pred <- exp(pred)/(1+exp(pred)) }
+                        
+                        sdxtime <- pred
+                        
+                        # Predictions for the rest of the time-slices and stack them in a Raster Stack
+                        for(i in 2:length(taxa.ages)){
+                                pathclim <- paste("../Data/Paleoclimate/Climate/", taxa.ages[i], ".grd", sep="")
+                                paleoclim <- brick(pathclim)
+                                pred <- predict(paleoclim, sdm)
+                                if (bestSDM == "GLM") { pred <- exp(pred)/(1+exp(pred)) }
+                                sdxtime <- addLayer(sdxtime, pred)
+                        }
+                        
+                        # Calculate the average of the predictions across all time-slices
+                        meansdxtime <- addLayer(meansdxtime, mean(sdxtime))
+                }
+                
+                # If instead you selected method 2 (weighted average), we will do this:
+                if (method == 2) {
+                        # Calculate mean TSS
+                        btss <- mean(c(sbtss, tbtss))
+                        xtss <- mean(c(sxtss, txtss))
+                        gtss <- mean(c(sgtss, tgtss))
+                        
+                        # Complete models
+                        bc <- bioclim(presence)
+                        xm <- maxent(all, env$pa)
+                        gm1 <- glm(pa ~ Temp * Rain, family = binomial(link = "logit"), data = env)
+                        
+                        # Prediction for first time-slice
+                        pathclim <- paste("../Data/Paleoclimate/Climate/", taxa.ages[1], ".grd", sep="")
+                        paleoclim <- brick(pathclim)
+                                
+                        bp <- predict(paleoclim, bc)
+                        xp <- predict(paleoclim, xm)
+                        gp <- predict(paleoclim, gm1)
+                        gp <- exp(gp)/(1+exp(gp))
+                        
+                        twap <- weighted.mean(stack(bp, xp, gp), c(btss, xtss, gtss))
+                        
+                        sdxtime <- twap
+                        
+                        for(i in 2:length(taxa.ages)){
+                                pathclim <- paste("../Data/Paleoclimate/Climate/", taxa.ages[i], ".grd", sep="")
+                                paleoclim <- brick(pathclim)
+                                
+                                bp <- predict(paleoclim, bc)
+                                xp <- predict(paleoclim, xm)
+                                gp <- predict(paleoclim, gm1)
+                                gp <- exp(gp)/(1+exp(gp))
+                                
+                                twap <- weighted.mean(stack(bp, xp, gp), c(btss, xtss, gtss))
+                                
+                                sdxtime <- addLayer(sdxtime, twap)
+                        }
+                        
+                        meansdxtime <- addLayer(meansdxtime, mean(sdxtime))
+                }
+}
+
+spdist <- mean(meansdxtime)
+```
+
+<br>
+The object `spdist` is the predicted distribution of the genus averaged across all time-slices and across the 30 iterations of the process. We can save it as a raster file with the following code.
+<br>
+
+```{r, eval=FALSE}
+pathsop <- paste("../Data/Rasters/Final PCS/PCS_", genus, ".tif", sep = "")
+writeRaster(spdist, filename = pathsop, overwrite=T, format="GTiff")
+```
+
+<br>
+We can open the raster file in QGIS and use the Zonal Statistics tool to calculate the mean value of the raster pixels in each grid cell of the 1º polygon grid of Australia. 
+
+```{r, echo=FALSE, eval=FALSE}
+plot(spdist)
+```
+
